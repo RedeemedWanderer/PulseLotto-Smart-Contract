@@ -1,0 +1,158 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/utils/math/SafeMath.sol";
+
+contract PrizePool is ERC20 {
+    using SafeMath for uint256;
+
+    uint256 public constant TAX_RATE = 5;
+    uint256 public constant BIWEEKLY_DISTRIBUTION = 0.5;
+    uint256 public constant SEMIQUARTERLY_DISTRIBUTION = 1;
+    uint256 public constant ANNUAL_DISTRIBUTION = 3.5;
+    uint256 public constant MIN_BALANCE = 5000 * 10 ** 18; // 5000 tokens
+
+    uint256 public biWeeklyPool;
+    uint256 public semiQuarterlyPool;
+    uint256 public annualPool;
+
+    uint256 public lastBiWeeklyDistribution;
+    uint256 public lastSemiQuarterlyDistribution;
+    uint256 public lastAnnualDistribution;
+
+    mapping(address => uint256) public eligibleBalances;
+    address[] public eligibleHolders;
+
+    event BiWeeklyWinner(address indexed winner, uint256 amount);
+    event SemiQuarterlyWinner(address indexed winner, uint256 amount);
+    event AnnualWinner(address indexed winner, uint256 amount);
+
+    constructor() ERC20("PrizePool", "PPL") {
+        _mint(msg.sender, 100000000 * 10 ** 18); // 100 million tokens
+        uint256 startTime = block.timestamp + 1 days;
+        lastBiWeeklyDistribution = startTime;
+        lastSemiQuarterlyDistribution = startTime;
+        lastAnnualDistribution = startTime;
+    }
+
+    function _transfer(address sender, address recipient, uint256 amount) internal override {
+        uint256 taxAmount = amount.mul(TAX_RATE).div(100);
+        uint256 transferAmount = amount.sub(taxAmount);
+
+        biWeeklyPool = biWeeklyPool.add(taxAmount.mul(BIWEEKLY_DISTRIBUTION).div(100));
+        semiQuarterlyPool = semiQuarterlyPool.add(taxAmount.mul(SEMIQUARTERLY_DISTRIBUTION).div(100));
+        annualPool = annualPool.add(taxAmount.mul(ANNUAL_DISTRIBUTION).div(100));
+
+        super._transfer(sender, recipient, transferAmount);
+
+        _updateEligibility(sender);
+        _updateEligibility(recipient);
+
+        _checkDistributions();
+    }
+
+    function _updateEligibility(address account) internal {
+        uint256 balance = balanceOf(account);
+
+        if (balance >= MIN_BALANCE && eligibleBalances[account] == 0) {
+            eligibleHolders.push(account);
+        }
+
+        if (balance < MIN_BALANCE && eligibleBalances[account] != 0) {
+            _removeFromEligible(account);
+        }
+
+        eligibleBalances[account] = balance;
+    }
+
+    function _checkDistributions() internal {
+        if (block.timestamp >= lastBiWeeklyDistribution + 2 weeks) {
+            _distributeBiWeekly();
+        }
+
+        if (block.timestamp >= lastSemiQuarterlyDistribution + 3 months) {
+            _distributeSemiQuarterly();
+        }
+
+        if (block.timestamp >= lastAnnualDistribution + 1 years) {
+            _distributeAnnual();
+        }
+    }
+
+    function _distributeBiWeekly() internal {
+        address winner = _randomEligibleHolder();
+        uint256 amount = biWeeklyPool;
+        biWeeklyPool = 0;
+        lastBiWeeklyDistribution = block.timestamp;
+
+        if (winner != address(0)) {
+            _transfer(address(this), winner, amount);
+            emit BiWeeklyWinner(winner, amount);
+        }
+    }
+
+    function _distributeSemiQuarterly() internal {
+        address winner = _randomEligibleHolder();
+        uint256 amount = semiQuarterlyPool;
+        semiQuarterlyPool = 0;
+        lastSemiQuarterlyDistribution = block.timestamp;
+
+        if (winner != address(0)) {
+            _transfer(address(this), winner, amount);
+            emit SemiQuarterlyWinner(winner, amount);
+        }
+    }
+
+    function _distributeAnnual() internal {
+        address winner = _randomEligibleHolder();
+        uint256 amount = annualPool;
+        annualPool = 0;
+        lastAnnualDistribution = block.timestamp;
+
+        if (winner != address(0)) {
+            _transfer(address(this), winner, amount);
+            emit AnnualWinner(winner, amount);
+        }
+    }
+
+    function _randomEligibleHolder() internal view returns (address) {
+        uint256 eligibleCount = eligibleHolders.length;
+        if (eligibleCount == 0) return address(0);
+
+        // Improve randomness by incorporating multiple block properties
+        uint256 randomIndex = uint256(keccak256(abi.encodePacked(block.timestamp, block.difficulty, msg.sender, blockhash(block.number - 1)))) % eligibleCount;
+
+        // Implementing slight edge towards larger holders (5% weight bias)
+        if (eligibleBalances[eligibleHolders[randomIndex]] >= MIN_BALANCE * 2) {
+            if (uint256(keccak256(abi.encodePacked(block.timestamp, block.difficulty, msg.sender, randomIndex))) % 100 < 5) {
+                return eligibleHolders[randomIndex];
+            }
+        }
+
+        return eligibleHolders[randomIndex];
+    }
+
+    function _removeFromEligible(address account) internal {
+        for (uint256 i = 0; i < eligibleHolders.length; i++) {
+            if (eligibleHolders[i] == account) {
+                eligibleHolders[i] = eligibleHolders[eligibleHolders.length - 1];
+                eligibleHolders.pop();
+                break;
+            }
+        }
+        eligibleBalances[account] = 0;
+    }
+
+    function isEligibleForLottery(address account) external view returns (bool) {
+        return eligibleBalances[account] >= MIN_BALANCE;
+    }
+
+    function getPools() external view returns (uint256, uint256, uint256) {
+        return (biWeeklyPool, semiQuarterlyPool, annualPool);
+    }
+
+    function getLastDistributions() external view returns (uint256, uint256, uint256) {
+        return (lastBiWeeklyDistribution, lastSemiQuarterlyDistribution, lastAnnualDistribution);
+    }
+}
